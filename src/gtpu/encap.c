@@ -384,7 +384,7 @@ static int netlink_send(struct pdr *pdr, struct far *far, struct sk_buff *skb_in
     u32 seq;
     void *header;
     struct nlattr *attr;
-    int i, err;
+    int i;
     struct nlattr *nest_msg_type;
 
     if (reports != NULL) {
@@ -404,45 +404,34 @@ static int netlink_send(struct pdr *pdr, struct far *far, struct sk_buff *skb_in
     seq = atomic_inc_return(&seq_counter);
     header = genlmsg_put(skb, 0, seq, &gtp5g_genl_family, 0, GTP5G_CMD_BUFFER_GTPU);
     if (!header)
-    {
-        nlmsg_free(skb);
-        return -ENOMEM;
-    }
+        goto genlmsg_fail;
 
     if (reports != NULL) {
         nest_msg_type = nla_nest_start(skb, GTP5G_REPORT);
+        if (!nest_msg_type)
+            goto genlmsg_fail;
 
         for (i = 0; i < report_num; i++) {
-            gtp5g_genl_fill_ur(skb, &reports[i]);
+            if (!gtp5g_genl_fill_ur(skb, &reports[i]))
+                goto genlmsg_fail;
         }
         
         nla_nest_end(skb, nest_msg_type);
     } else {
         nest_msg_type = nla_nest_start(skb, GTP5G_BUFFER);
+        if (!nest_msg_type)
+            goto genlmsg_fail;
 
-        err = nla_put_u16(skb, GTP5G_BUFFER_ID, pdr->id);
-        if (err != 0) {
-            nlmsg_free(skb);
-            return err;
-        }
-
-        err = nla_put_u64_64bit(skb, GTP5G_BUFFER_SEID, pdr->seid, GTP5G_BUFFER_PAD);
-        if (err != 0) {
-            nlmsg_free(skb);
-            return err;
-        }
-
-        err = nla_put_u16(skb, GTP5G_BUFFER_ACTION, far->action);
-        if (err != 0) {
-            nlmsg_free(skb);
-            return err;
-        }
+        if(nla_put_u16(skb, GTP5G_BUFFER_ID, pdr->id))
+            goto genlmsg_fail;
+        if (nla_put_u64_64bit(skb, GTP5G_BUFFER_SEID, pdr->seid, GTP5G_BUFFER_PAD))
+            goto genlmsg_fail;
+        if (nla_put_u16(skb, GTP5G_BUFFER_ACTION, far->action))
+            goto genlmsg_fail;
 
         attr = nla_reserve(skb, GTP5G_BUFFER_PACKET, skb_in->len);
-        if (!attr) {
-            nlmsg_free(skb);
-            return -EINVAL;
-        }
+        if (!attr)
+            goto genlmsg_fail;
         skb_copy_bits(skb_in, 0, nla_data(attr), skb_in->len);
 
         nla_nest_end(skb, nest_msg_type);
@@ -451,6 +440,11 @@ static int netlink_send(struct pdr *pdr, struct far *far, struct sk_buff *skb_in
     genlmsg_end(skb, header);
     genlmsg_multicast_netns(&gtp5g_genl_family, net, skb, 0, GTP5G_GENL_MCGRP, GFP_ATOMIC);
     return 0;
+
+genlmsg_fail:
+    genlmsg_cancel(skb, header);
+    nlmsg_free(skb);
+    return -EMSGSIZE;
 }
 
 /* Function unix_sock_{...} are used to handle buffering */
